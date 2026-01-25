@@ -1,0 +1,1 @@
+### Heart Diseas Prediction Model Using LAD (Logical Analysis of Data) ML Model
