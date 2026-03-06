@@ -1,4 +1,5 @@
 # main.py
+
 from sklearn.model_selection import train_test_split
 from MaxPatterns import *
 from AStarFeatureSelector import *
@@ -185,7 +186,8 @@ def evaluate_lazy(lazy_model, X_train_bin, y_train, X_test_bin, y_test, model_na
 # =====================================================================================
 
 print("\n" + "="*70)
-print("LAZY PATTERNS METRICS ")
+print("LAZY PATTERNS – FULL DETAILED EVALUATION")
+print("="*70)
 
 lazy = LazyPatterns(binarizer=binarizer, purity=0.75, min_support=3, verbose=True)
 lazy.fit(Xbin_train, y_train, original_feature_names=feature_names)

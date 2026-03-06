@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Heart Disease Risk Assessment</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>Heart Disease Risk Assessment</h1>
+    <p>Rule-based explainable model — Cleveland Heart Disease Dataset</p>
+  </header>
+
+  <div class="card">
+    <div class="card-header">Enter Patient Information</div>
+
+    <div class="form-section">
+      <form method="POST" class="form-grid">
+        <div class="form-group">
+          <label for="age">Age (years)</label>
+          <input type="number" id="age" name="age" min="20" max="90" required placeholder="e.g. 56">
+          <div class="helper-text">Typical range: 29–77 (mean ≈ 54.4)</div>
+        </div>
+
+        <div class="form-group">
+          <label for="sex">Sex</label>
+          <select id="sex" name="sex" required>
+            <option value="">— Select —</option>
+            <option value="1">Male</option>
+            <option value="0">Female</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="cp">Chest Pain Type (cp)</label>
+          <select id="cp" name="cp" required>
+            <option value="">— Select —</option>
+            <option value="0">0 – typical angina</option>
+            <option value="1">1 – atypical angina</option>
+            <option value="2">2 – non-anginal pain</option>
+            <option value="3">3 – asymptomatic</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="trestbps">Resting Blood Pressure (mm Hg)</label>
+          <input type="number" id="trestbps" name="trestbps" min="90" max="220" required placeholder="e.g. 130">
+          <div class="helper-text">Typical: 120–140 (mean ≈132)</div>
+        </div>
+
+        <div class="form-group">
+          <label for="chol">Serum Cholesterol (mg/dl)</label>
+          <input type="number" id="chol" name="chol" min="120" max="600" required placeholder="e.g. 240">
+          <div class="helper-text">Typical: 211–275 (mean ≈247)</div>
+        </div>
+
+        <div class="form-group">
+          <label for="fbs">Fasting Blood Sugar > 120 mg/dl (fbs)</label>
+          <select id="fbs" name="fbs" required>
+            <option value="">— Select —</option>
+            <option value="1">Yes</option>
+            <option value="0">No</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="restecg">Resting Electrocardiogram (restecg)</label>
+          <select id="restecg" name="restecg" required>
+            <option value="">— Select —</option>
+            <option value="0">0 – normal</option>
+            <option value="1">1 – ST-T wave abnormality</option>
+            <option value="2">2 – probable or definite LV hypertrophy</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="thalach">Maximum Heart Rate Achieved (thalach)</label>
+          <input type="number" id="thalach" name="thalach" min="70" max="220" required placeholder="e.g. 150">
+          <div class="helper-text">Typical: 133–166 (mean ≈150)</div>
+        </div>
+
+        <div class="form-group">
+          <label for="exang">Exercise Induced Angina (exang)</label>
+          <select id="exang" name="exang" required>
+            <option value="">— Select —</option>
+            <option value="1">Yes</option>
+            <option value="0">No</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="oldpeak">Oldpeak (ST depression induced by exercise relative to rest)</label>
+          <input type="number" id="oldpeak" name="oldpeak" step="0.1" min="0" max="7" required placeholder="e.g. 1.0">
+          <div class="helper-text">Typical: 0–1.6 (mean ≈1.0)</div>
+        </div>
+
+        <div class="form-group">
+          <label for="slope">Slope of Peak Exercise ST Segment</label>
+          <select id="slope" name="slope" required>
+            <option value="">— Select —</option>
+            <option value="0">0 – upsloping</option>
+            <option value="1">1 – flat</option>
+            <option value="2">2 – downsloping</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="ca">Number of Major Vessels Colored by Fluoroscopy (0–3)</label>
+          <input type="number" id="ca" name="ca" min="0" max="3" step="1" required placeholder="e.g. 0">
+        </div>
+
+        <div class="form-group">
+          <label for="thal">Thalassemia (thal)</label>
+          <select id="thal" name="thal" required>
+            <option value="">— Select —</option>
+            <option value="1">1 – normal</option>
+            <option value="2">2 – fixed defect</option>
+            <option value="3">3 – reversible defect</option>
+          </select>
+        </div>
+
+        <button type="submit" class="submit-btn">Assess Risk</button>
+      </form>
+    </div>
+  </div>
+
+  {% if result.success %}
+    <div class="result-section {% if result.class.startswith('High') %}high-risk{% else %}low-risk{% endif %}">
+      <h3>Prediction Result</h3>
+      <p style="font-size: 1.4rem; font-weight: 600; margin: 1rem 0;">
+        {{ result.class }}
+      </p>
+
+      <p><strong>Confidence:</strong> {{ result.confidence }}</p>
+
+      <div class="rule-box">
+        <strong>Matched Rule / Explanation:</strong><br>
+        {{ result.rule }}
+      </div>
+
+      {% if result.exact %}
+        <div class="badge exact">Exact rule match</div>
+      {% else %}
+        <div class="badge partial">Best partial match</div>
+      {% endif %}
+    </div>
+  {% elif result.error %}
+    <div class="result-section" style="border-left-color: var(--warning); background: #fffbeb; color: #92400e;">
+      <strong>Error:</strong> {{ result.error }}
+    </div>
+  {% endif %}
+
+  <div class="about-section">
+    <h2>About the Model & How It Works</h2>
+
+    <p>This tool uses a <strong>rule-based classifier</strong> built with the Logical Analysis of Data (LAD) approach on the Cleveland Heart Disease dataset.</p>
+
+    <h3>Training & Prediction Process – Step by Step</h3>
+    <ol class="process-steps">
+      <li><strong>Data Preparation</strong><br>
+          The Cleveland dataset contains 14 features (age, sex, cp, trestbps, chol, etc.) and a binary target (0 = no disease, 1 = disease).</li>
+
+      <li><strong>Discretization (Binarization)</strong><br>
+          Numeric features are converted into many binary (0/1) conditions using shallow decision trees.<br>
+          Example: "chol ≤ 219.58" becomes a binary feature (1 = yes, 0 = no).</li>
+
+      <li><strong>Feature Selection</strong><br>
+          Only the most promising binary features are kept using A* search guided by cross-validated logistic regression accuracy.</li>
+
+      <li><strong>Rule Mining</strong><br>
+          Maximal high-purity patterns are discovered using greedy backward elimination.<br>
+          Only rules with purity ≥ 89–96% are kept. Each rule gets a weight based on its frequency within the predicted class.</li>
+
+      <li><strong>Prediction</strong><br>
+          For a new patient:<br>
+          • All features are binarized using the same thresholds.<br>
+          • We look for the rule with the <strong>highest score = overlap × rule weight</strong>.<br>
+          • If exact match → strongest confidence.<br>
+          • If no exact match → best partial match is used (always gives an answer).</li>
+
+      <li><strong>Output</strong><br>
+          You get the predicted class + confidence + the exact rule that fired (or best matching one).</li>
+    </ol>
+
+    <p style="margin-top: 1.5rem; color: #dc2626; font-weight: 500;">
+      <strong>Important notice:</strong> This is an educational/research prototype only.<br>
+      It is <strong>not</strong> a substitute for professional medical diagnosis.
+    </p>
+  </div>
+</div>
+
+<footer>
+  <p>Logical Rule-Based Heart Disease Classifier • Educational project • 2025</p>
+</footer>
+
+</body>
+</html>

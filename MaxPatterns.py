@@ -42,7 +42,7 @@ class MaxPatterns:
                 for a in attrs:
                     trial_attrs = [t for t in attrs if t != a]
                     _, _, p2, _, _ = self._stats(Xn, y, inst, trial_attrs)
-                    if p2 >= self.min_purity and p2 > best_purity:
+                    if p2 >= self.min_purity and p2 >= best_purity:
                         best_purity = p2
                         best_remove = a
 

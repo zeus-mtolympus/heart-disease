@@ -43,10 +43,6 @@ sns.heatmap(df.isnull(), cbar=True, yticklabels=False, cmap='viridis')
 plt.title('Missing Values Heatmap')
 plt.show()
 
-# Simple imputation for visualization (median for ca, mode for thal)
-df_viz = df.copy()
-df_viz['ca'].fillna(df_viz['ca'].median(), inplace=True)
-df_viz['thal'].fillna(df_viz['thal'].mode()[0], inplace=True)
 
 # =============================================================================
 # 3. TARGET DISTRIBUTION
@@ -68,7 +64,6 @@ for i, v in enumerate(df['target'].value_counts()):
     plt.text(i, v + 2, str(v), ha='center', fontweight='bold')
 plt.show()
 
-print(f"Disease prevalence: {df['target'].mean():.1%}")
 
 # =============================================================================
 # 4. SUMMARY STATISTICS BY TARGET

@@ -5,10 +5,12 @@ from GreedyLADSelector import *
 from DecisionTreeCutpointBinarizer import *
 from DecisionTreeCutpointBinarizerV2 import *
 from LazyPatterns import *
+from Eager1 import *
 import time
 import pickle
 import numpy as np
 import pandas as pd
+from MutualInfoGreedySelector import *
 from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score, f1_score,
     precision_score, recall_score, roc_auc_score, confusion_matrix
@@ -211,8 +213,8 @@ feature_names = df.columns[:-1].tolist()
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
     test_size=0.25,          # 75% train, 25% test
-    random_state=42,
-    stratify=y               # THIS keeps class balance identical
+    random_state=42,            #so that everytime the same data is selected for training when u run program again and again 
+    stratify=y               # THIS keeps class balance in both train and test split
 )
 
 print("\n" + "="*50)
@@ -245,9 +247,17 @@ print(f"Binarized training matrix: {Xbin_train.shape}\n")
 
 selector = AStarFeatureSelector()                  
 Xsel_train = selector.fit(Xbin_train, y_train, bin_feature_names=bin_feature_names).transform(Xbin_train)
+# Paper-based minimal feature selection
+# selector = MutualInfoGreedySelector(max_features=15, cv=5)
 
+# Xsel_train = selector.fit_transform(Xbin_train, y_train)
+
+print("\nSelected feature indices:", selector.selected_features_)
+print("Total selected:", len(selector.selected_features_))
 # Step 3: Rule Mining (only on train!)
-mp = MaxPatterns(binarizer=binarizer, selector=selector, purity=0.65, verbose=True, threshold = 0)
+mp = MaxPatterns(binarizer=binarizer, selector=selector, purity=1.0, verbose=True, threshold = 0)
+# mp = Eager1(binarizer=binarizer, selector=selector, purity=1.0, verbose=True, threshold=0)
+
 mp.fit(Xsel_train, y_train, original_feature_names=feature_names)
 
 print(f"\nTOP {len(mp.rules)} RULES DISCOVERED ON TRAINING DATA:")
