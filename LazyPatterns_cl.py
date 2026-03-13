@@ -3,120 +3,172 @@ import numpy as np
 
 class LazyPatterns:
     """
-    Lazy Rule Learner - per-test-instance rule generation using all binarized features.
-    Completely lazy: no rules are mined in advance.
+    Lazy Rule Learner — truly lazy, no rules mined upfront.
+
+    fit():
+        Stores training data and computes a per-feature purity weight.
+        Purity weight for feature f = max purity achieved by f alone
+        across both its values (0 and 1). Higher weight = more discriminating
+        = removed last during pruning.
+
+    predict_single():
+        Starts with all selected features active for the test instance.
+        Checks if training rows matching on all active features are pure
+        enough and numerous enough — if yes, majority vote among matches.
+        If not, removes the lowest-weight feature and tries again.
+        Repeats until a match is found or all features are exhausted.
+        Falls back to majority class only as last resort.
+
+    The "rule" for each instance is the subset of its own features
+    that survived pruning before a match was found.
     """
-    def __init__(self, binarizer, purity=0.75, min_support=3, verbose=False):
-        self.binarizer = binarizer
-        self.purity = purity
+
+    def __init__(self, binarizer, selector, purity=0.75, min_support=3, verbose=False):
+        self.binarizer   = binarizer
+        self.selector    = selector
+        self.purity      = purity
         self.min_support = min_support
-        self.verbose = verbose
+        self.verbose     = verbose
 
-    def fit(self, X_train_bin, y_train, original_feature_names):
-        self.X_train_bin = X_train_bin.astype(np.int8)
-        self.y_train = y_train.astype(np.int8)
-        self.original_feature_names = original_feature_names
+    def fit(self, X_train_sel, y_train, original_feature_names):
+        self.X_train_sel = X_train_sel.astype(np.int8)
+        self.y_train     = y_train.astype(np.int8)
+        n_features       = X_train_sel.shape[1]
 
-        self.bin_names = [
-            f"{original_feature_names[f_idx]} <= {thr:.4f}"
-            for cut_id, (f_idx, thr) in self.binarizer.cutpoints.items()
-        ]
+        # Build readable names for selected features
+        selected_cut_ids = self.selector.best_subset
+        self.bin_names   = []
+        for cut_id in selected_cut_ids:
+            feat_idx, thresh = self.binarizer.cutpoints[cut_id]
+            self.bin_names.append(
+                f"{original_feature_names[feat_idx]} <= {thresh:.4f}"
+            )
+
+        # ── Per-feature purity weight ────────────────────────────────────────
+        # For each feature, check both values (0 and 1).
+        # Purity for a value v = fraction of rows where feature=v that share
+        # the majority label among those rows.
+        # Feature weight = max purity across both values.
+        # A weight of 1.0 means one value of this feature perfectly separates classes.
+        self.feature_weights = np.zeros(n_features, dtype=float)
+
+        for f in range(n_features):
+            best_purity = 0.0
+            for val in (0, 1):
+                mask    = self.X_train_sel[:, f] == val
+                covered = self.y_train[mask]
+                if len(covered) < self.min_support:
+                    continue
+                counts  = np.bincount(covered.astype(int),
+                                      minlength=int(self.y_train.max()) + 1)
+                pur     = counts.max() / len(covered)
+                if pur > best_purity:
+                    best_purity = pur
+            self.feature_weights[f] = best_purity
+
+        # Pruning order: ascending weight = least discriminating removed first
+        # Pre-compute once so every predict_single uses the same order
+        self.prune_order = np.argsort(self.feature_weights).tolist()  # low → high
 
         if self.verbose:
-            print(f"[LazyPatterns] Stored {self.X_train_bin.shape[0]} training rows "
-                  f"and {self.X_train_bin.shape[1]} binary features.")
+            print(f"[LazyPatterns] fit() — {self.X_train_sel.shape[0]} training rows, "
+                  f"{n_features} selected features.")
+            print(f"[LazyPatterns] purity={self.purity}, min_support={self.min_support}")
+            print(f"[LazyPatterns] Feature weights (purity-based):")
+            for f in np.argsort(self.feature_weights)[::-1]:
+                print(f"  [{f:3d}] {self.bin_names[f]:50s}  weight={self.feature_weights[f]:.4f}")
+
         return self
 
-    def _make_readable(self, row_bin, mask):
+    def _make_readable(self, row_bin, active_cols):
         conds = []
-        for i in np.where(mask)[0]:
+        for i in active_cols:
             if row_bin[i] == 1:
                 conds.append(self.bin_names[i])
             else:
                 conds.append(f"NOT {self.bin_names[i]}")
         return conds
 
-    def predict_single(self, test_row_bin):
-        # 1. Exact match first (fast path)
-        matches = np.all(self.X_train_bin == test_row_bin, axis=1)
-        idx_exact = np.where(matches)[0]
+    def _check_match(self, test_row_sel, active_cols):
+        """
+        Among training rows that match test_row_sel on all active_cols,
+        check if there are enough (>= min_support) and they are pure enough
+        (>= purity). Returns (matched, label, purity, support) if found,
+        else (False, None, 0, 0).
+        """
+        if not active_cols:
+            return False, None, 0.0, 0
 
-        if len(idx_exact) >= self.min_support:
-            labels, counts = np.unique(self.y_train[idx_exact], return_counts=True)
-            best_label = labels[np.argmax(counts)]
-            pur = counts.max() / len(idx_exact)
-            if pur >= self.purity:
-                return {
-                    "label": int(best_label),
-                    "purity": float(pur),
-                    "support": int(len(idx_exact)),
-                    "exact_match": True,
-                    "rule": self._make_readable(
-                        test_row_bin, np.ones_like(test_row_bin, dtype=bool)
-                    )
-                }
+        vals    = [int(test_row_sel[c]) for c in active_cols]
+        mask    = np.all(self.X_train_sel[:, active_cols] == vals, axis=1)
+        covered = np.where(mask)[0]
 
-        # 2. Bottom-up greedy pattern building
-        active_cols = np.arange(len(test_row_bin))
-        current_cols = []
-        current_vals = []
-        best_purity = 0.0
+        if len(covered) < self.min_support:
+            return False, None, 0.0, len(covered)
 
-        # Fix #8: initialise before the loop so they are always bound
-        best_label = int(np.argmax(np.bincount(self.y_train)))
-        best_support = len(self.y_train)
+        y_cov   = self.y_train[covered]
+        counts  = np.bincount(y_cov.astype(int),
+                               minlength=int(self.y_train.max()) + 1)
+        pur     = counts.max() / len(covered)
 
-        while len(current_cols) < len(active_cols):
-            best_col = None
-            best_trial_purity = best_purity
+        if pur < self.purity:
+            return False, None, pur, len(covered)
 
-            for col in active_cols:
-                if col in current_cols:
-                    continue
-                trial_cols = current_cols + [col]
-                trial_vals = current_vals + [int(test_row_bin[col])]
-                mask = np.all(self.X_train_bin[:, trial_cols] == trial_vals, axis=1)
-                covered = np.where(mask)[0]
+        label = int(np.argmax(counts))
+        return True, label, float(pur), len(covered)
 
-                if len(covered) < self.min_support:
-                    continue
+    def predict_single(self, test_row_sel):
+        """
+        Prune features from lowest to highest weight until a pure match is found.
+        Returns a dict with: label, purity, support, exact_match, stage, rule.
+        """
+        # Start with all features active
+        active_set = list(range(len(test_row_sel)))
 
-                y_cov = self.y_train[covered]
-                trial_purity = np.max(np.bincount(y_cov)) / len(covered)
+        # Pruning queue: order in which features will be removed if needed
+        # (lowest weight first — least discriminating dropped first)
+        prune_queue = [f for f in self.prune_order if f in active_set]
 
-                if trial_purity > best_trial_purity and trial_purity >= self.purity:
-                    best_trial_purity = trial_purity
-                    best_col = col
-                    best_label = int(np.argmax(np.bincount(y_cov)))
-                    best_support = len(covered)
-
-            if best_col is None:
-                break
-
-            current_cols.append(best_col)
-            current_vals.append(int(test_row_bin[best_col]))
-            best_purity = best_trial_purity
-
-        if best_purity >= self.purity:
-            mask = np.zeros(len(test_row_bin), dtype=bool)
-            mask[current_cols] = True
+        # ── Try full feature set first (exact match equivalent) ──────────────
+        matched, label, pur, sup = self._check_match(test_row_sel, active_set)
+        if matched:
             return {
-                "label": int(best_label),
-                "purity": float(best_purity),
-                "support": int(best_support),
-                "exact_match": len(current_cols) == len(active_cols),
-                "rule": self._make_readable(test_row_bin, mask)
+                "label":       label,
+                "purity":      pur,
+                "support":     sup,
+                "exact_match": True,
+                "stage":       "exact",
+                "rule":        self._make_readable(test_row_sel, active_set)
             }
 
-        # 3. Fallback — majority class
-        maj = int(np.argmax(np.bincount(self.y_train)))
+        # ── Prune one feature at a time ──────────────────────────────────────
+        for feat_to_remove in prune_queue:
+            active_set.remove(feat_to_remove)
+
+            if not active_set:
+                break
+
+            matched, label, pur, sup = self._check_match(test_row_sel, active_set)
+            if matched:
+                return {
+                    "label":       label,
+                    "purity":      pur,
+                    "support":     sup,
+                    "exact_match": False,
+                    "stage":       "pruned",
+                    "rule":        self._make_readable(test_row_sel, active_set)
+                }
+
+        # ── Majority class fallback ──────────────────────────────────────────
+        maj = int(np.argmax(np.bincount(self.y_train.astype(int))))
         return {
-            "label": maj,
-            "purity": 0.5,
-            "support": len(self.y_train),
+            "label":       maj,
+            "purity":      0.5,
+            "support":     len(self.y_train),
             "exact_match": False,
-            "rule": ["<majority class fallback>"]
+            "stage":       "fallback",
+            "rule":        ["<majority class fallback>"]
         }
 
-    def predict(self, X_test_bin):
-        return [self.predict_single(row) for row in X_test_bin]
+    def predict(self, X_test_sel):
+        return [self.predict_single(row) for row in X_test_sel]

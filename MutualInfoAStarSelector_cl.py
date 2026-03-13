@@ -20,7 +20,7 @@ class MutualInfoAStarSelector:
     otherwise falls back to best_overall and removes conflicting rows.
     """
 
-    def __init__(self, max_expansions=10000, cv=3): #1110999
+    def __init__(self, max_expansions=100000, cv=3): #1110999
         self.max_expansions = max_expansions
         self.cv = cv
         # Cleaned training data after fallback conflict removal — available to pipeline

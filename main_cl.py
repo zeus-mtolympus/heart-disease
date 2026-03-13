@@ -20,10 +20,21 @@ BINARIZER_MIN_SAMPLES   = 10
 # Feature Selector: "greedy" | "astar" | "mutualinfo" | "mutualinfo_astar"
 SELECTOR = "mutualinfo_astar"
 
-# Pattern Miner: "maxpatterns" | "eager"
+# Pattern Miner: "maxpatterns" | "eager" | "genetic"
+# Use PATTERN_MINER = "lazy" to run the lazy path instead (separate evaluate)
 PATTERN_MINER   = "maxpatterns"
-PURITY          = 1.0
+PURITY          = 0.7
 THRESHOLD       = 0
+
+# Genetic algorithm settings (only used when PATTERN_MINER = "genetic")
+GA_GENERATIONS  = 1000
+GA_POP_SIZE     = 200
+
+# Lazy settings (only used when PATTERN_MINER = "lazy")
+# LAZY_PURITY is separate from PURITY so eager and lazy can be tuned independently
+# 1.0 purity is too strict for lazy — recommended range: 0.65–0.80
+LAZY_PURITY      = 0.75
+LAZY_MIN_SUPPORT = 3
 
 # ================================================================
 # IMPORTS
@@ -41,6 +52,8 @@ from sklearn.metrics import (
 
 from MaxPatterns_cl import MaxPatterns
 from Eager_cl import Eager
+from GeneticRuleMiner_cl import GeneticRuleMiner
+from LazyPatterns_cl import LazyPatterns
 from AStarFeatureSelector_cl import AStarFeatureSelector
 from GreedyLADSelector_cl import GreedyLADSelector
 from DecisionTreeCutpointBinarizerV2 import DecisionTreeCutpointBinarizerV2
@@ -114,10 +127,9 @@ def select_features(selector_name, Xbin_train, y_train, bin_feature_names):
             f"Choose from: greedy, astar, mutualinfo, mutualinfo_astar"
         )
 
-    # Fix #2: use the cleaned data the selector already produced — no second check
-    # selector.y_clean is the conflict-free y that matches selector.X_clean
-    Xsel_train = selector.X_clean[:, selector.best_subset]
-    y_train_clean = selector.y_clean
+    # Use cleaned data the selector already produced — no second consistency check
+    Xsel_train     = selector.X_clean[:, selector.best_subset]
+    y_train_clean  = selector.y_clean
 
     print(f"\nSelected feature indices: {selector.best_subset}")
     print(f"Total selected: {len(selector.best_subset)}")
@@ -125,19 +137,26 @@ def select_features(selector_name, Xbin_train, y_train, bin_feature_names):
 
 
 def mine_patterns(miner_name, binarizer, selector, Xsel_train, y_train,
-                  feature_names, purity, threshold):
+                  feature_names, purity, threshold,
+                  ga_generations=300, ga_pop_size=200):
     if miner_name == "maxpatterns":
         miner = MaxPatterns(binarizer=binarizer, selector=selector,
                             purity=purity, verbose=True, threshold=threshold)
     elif miner_name == "eager":
         miner = Eager(binarizer=binarizer, selector=selector,
                        purity=purity, verbose=True, threshold=threshold)
+    elif miner_name == "genetic":
+        miner = GeneticRuleMiner(binarizer=binarizer, selector=selector,
+                                 purity=purity, verbose=True, threshold=threshold,
+                                 n_generations=ga_generations, pop_size=ga_pop_size)
     else:
-        raise ValueError(f"Unknown miner: '{miner_name}'. Choose from: maxpatterns, eager")
+        raise ValueError(
+            f"Unknown miner: '{miner_name}'. "
+            f"Choose from: maxpatterns, eager1, genetic"
+        )
 
     miner.fit(Xsel_train, y_train, original_feature_names=feature_names)
 
-    # Fix #5: guard before printing rules
     if miner.rules:
         print(f"\nTOP {len(miner.rules)} RULES DISCOVERED ON TRAINING DATA:")
         miner.print_rules(top_n=len(miner.rules))
@@ -150,21 +169,20 @@ def mine_patterns(miner_name, binarizer, selector, Xsel_train, y_train,
 
 def _predict_row(row, sorted_rules):
     """
-    Fix #9: single shared prediction function used by both predict_all and evaluate.
+    Single shared prediction function used by both print_predictions and evaluate.
     Checks exact match first (returns immediately), then falls back to strongest
     partial match scored as overlap_ratio * weight.
     Returns (label, is_exact, confidence_score).
     """
     best_label = None
     best_score = -1
-    is_exact = False
+    is_exact   = False
 
     for rule in sorted_rules:
         attrs, values = rule["attrs"], rule["values"]
         matches = sum(row[attrs[i]] == values[i] for i in range(len(attrs)))
 
         if matches == len(attrs):
-            # Exact match — highest possible confidence, return immediately
             return rule["label"], True, rule["weight"]
 
         score = (matches / len(attrs)) * rule["weight"]
@@ -203,7 +221,6 @@ def print_predictions(miner, X_test_selected, y_test):
 
     for row in X_test_selected:
         label, exact, score = _predict_row(row, sorted_rules)
-        # Find the rule that produced this prediction for the justification string
         best_rule = next(
             (r for r in sorted_rules
              if r["label"] == label and
@@ -264,7 +281,6 @@ def evaluate(miner, X_train_sel, y_train, X_test_sel, y_test, model_name,
         "rules":     miner.rules
     })) / 1024
 
-    # Fix #9: use shared predict_all for both train and test — identical logic
     start = time.time()
     test_pred, test_exact, test_conf = predict_all(miner, X_test_sel)
     pred_time_ms = (time.time() - start) / len(X_test_sel) * 1000
@@ -277,7 +293,6 @@ def evaluate(miner, X_train_sel, y_train, X_test_sel, y_test, model_name,
     f1              = f1_score(y_test, test_pred)
     prec            = precision_score(y_test, test_pred, zero_division=0)
     rec             = recall_score(y_test, test_pred, zero_division=0)
-    # Fix #10: note AUC uses ranking scores, not calibrated probabilities
     auc             = roc_auc_score(y_test, test_conf)
     exact_cov       = test_exact.mean()
     tn, fp, fn, tp  = confusion_matrix(y_test, test_pred).ravel()
@@ -317,6 +332,129 @@ def evaluate(miner, X_train_sel, y_train, X_test_sel, y_test, model_name,
     print(f"Correct predictions   : {tn + tp}/{len(y_test)} = {test_acc:.1%}")
 
 
+def evaluate_lazy(lazy, X_train_sel, y_train, X_test_sel, y_test,
+                  selector_name, purity, min_support):
+    """
+    Separate evaluation path for LazyPatterns.
+    Includes full stage diagnostics: how many instances were resolved by
+    exact match, greedy rule, or fell back to majority class.
+    """
+    print("="*90)
+    print("                 LAD EVALUATION  —  LAZY PATTERNS")
+    print("="*90)
+
+    print("PIPELINE SETTINGS")
+    print(f"  Selector          : {selector_name}")
+    print(f"  Pattern Miner     : lazy")
+    print(f"  Purity threshold  : {purity}")
+    print(f"  Min support       : {min_support}")
+    print()
+
+    def run_lazy(X):
+        results  = lazy.predict(X)
+        labels   = np.array([r["label"]       for r in results])
+        purities = np.array([r["purity"]       for r in results])
+        supports = np.array([r["support"]      for r in results])
+        exacts   = np.array([r["exact_match"]  for r in results])
+        stages   = np.array([r["stage"]        for r in results])
+        return labels, purities, supports, exacts, stages, results
+
+    start = time.time()
+    test_pred, test_pur, test_sup, test_exact, test_stages, test_results = run_lazy(X_test_sel)
+    pred_time_ms = (time.time() - start) / len(X_test_sel) * 1000
+
+    train_pred, _, _, _, _, _ = run_lazy(X_train_sel)
+
+    # ── Stage breakdown ──────────────────────────────────────────────────────
+    n_exact    = int(np.sum(test_stages == "exact"))
+    n_pruned   = int(np.sum(test_stages == "pruned"))
+    n_fallback = int(np.sum(test_stages == "fallback"))
+    n_test     = len(y_test)
+
+    # Accuracy per stage — tells you where errors are coming from
+    exact_mask    = test_stages == "exact"
+    pruned_mask   = test_stages == "pruned"
+    fallback_mask = test_stages == "fallback"
+
+    acc_exact    = (accuracy_score(y_test[exact_mask],    test_pred[exact_mask])
+                    if n_exact    > 0 else float("nan"))
+    acc_pruned   = (accuracy_score(y_test[pruned_mask],   test_pred[pruned_mask])
+                    if n_pruned   > 0 else float("nan"))
+    acc_fallback = (accuracy_score(y_test[fallback_mask], test_pred[fallback_mask])
+                    if n_fallback > 0 else float("nan"))
+
+    train_acc       = accuracy_score(y_train, train_pred)
+    test_acc        = accuracy_score(y_test,  test_pred)
+    overfitting_gap = train_acc - test_acc
+    bal_acc         = balanced_accuracy_score(y_test, test_pred)
+    f1              = f1_score(y_test, test_pred)
+    prec            = precision_score(y_test, test_pred, zero_division=0)
+    rec             = recall_score(y_test, test_pred, zero_division=0)
+    tn, fp, fn, tp  = confusion_matrix(y_test, test_pred).ravel()
+
+    # ── Stage diagnostics ────────────────────────────────────────────────────
+    print("STAGE DIAGNOSTICS  (tells you where predictions are coming from)")
+    print(f"  Stage 1 — Exact match : {n_exact:4d}/{n_test} "
+          f"({n_exact/n_test:.1%})  accuracy={acc_exact:.4f}"
+          if n_exact > 0 else
+          f"  Stage 1 — Exact match : {n_exact:4d}/{n_test} ({n_exact/n_test:.1%})")
+    print(f"  Stage 2 — Pruned rule : {n_pruned:4d}/{n_test} "
+          f"({n_pruned/n_test:.1%})  accuracy={acc_pruned:.4f}"
+          if n_pruned > 0 else
+          f"  Stage 2 — Pruned rule : {n_pruned:4d}/{n_test} ({n_pruned/n_test:.1%})")
+    print(f"  Stage 3 — Fallback    : {n_fallback:4d}/{n_test} "
+          f"({n_fallback/n_test:.1%})  accuracy={acc_fallback:.4f}"
+          if n_fallback > 0 else
+          f"  Stage 3 — Fallback    : {n_fallback:4d}/{n_test} ({n_fallback/n_test:.1%})")
+    print()
+
+    # Diagnostic hint if fallback rate is high
+    if n_fallback / n_test > 0.3:
+        print(f"  [DiagnosticHint] {n_fallback/n_test:.1%} fallback rate is high.")
+        print(f"  Suggestions:")
+        print(f"    — Lower LAZY_PURITY (currently {purity}) — try 0.65 or 0.60")
+        print(f"    — Lower LAZY_MIN_SUPPORT (currently {min_support}) — try 2")
+        print(f"    — Use a binarizer with more features (denser cutpoints)")
+        print()
+
+    print(f"Prediction Speed      : {pred_time_ms:.2f} ms per sample")
+    print(f"Avg Rule Purity       : {test_pur.mean():.4f}")
+    print(f"Avg Rule Support      : {test_sup.mean():.1f}")
+    print()
+    print(f"Train Accuracy        : {train_acc:.4f}")
+    print(f"Test Accuracy         : {test_acc:.4f}")
+    print(f"OVERFITTING GAP       : {overfitting_gap:+.4f} ← ← ← ← ← ← ← ← ← ← ← ← ←")
+    print()
+    print("TEST PERFORMANCE")
+    print(f"  Accuracy            : {test_acc:.4f}")
+    print(f"  Balanced Accuracy   : {bal_acc:.4f}")
+    print(f"  F1-Score            : {f1:.4f}")
+    print(f"  Precision           : {prec:.4f}")
+    print(f"  Recall              : {rec:.4f}")
+    print()
+    print("FULL CONFUSION MATRIX")
+    print("                        Predicted →")
+    print("                          No Disease (0)    Disease (1)")
+    print(f"True No Disease (0) →       {tn:4d}             {fp:4d}"
+          f"    ← FP: Healthy wrongly told sick")
+    print(f"True Disease    (1) →       {fn:4d}             {tp:4d}"
+          f"    ← FN: Sick patient missed")
+    print()
+    print(f"→ {fp} healthy patients incorrectly predicted as having disease (False Positive)")
+    print(f"→ {fn} patients with disease incorrectly predicted as healthy "
+          f"(False Negative ← more dangerous in medicine)")
+    print(f"Correct predictions   : {tn + tp}/{len(y_test)} = {test_acc:.1%}")
+
+    # ── Per-instance breakdown (reuse already-computed results, no second predict call) ──
+    print(f"\nFirst {min(100, n_test)} lazy predictions:")
+    for i in range(min(100, n_test)):
+        r        = test_results[i]
+        rule_str = " AND ".join(r["rule"])[:80]
+        print(f"  True={y_test[i]} | Pred={r['label']} | Stage={r['stage']:8s} | "
+              f"Purity={r['purity']:.2f} | Support={r['support']:4d} | "
+              f"Rule: {rule_str}...")
+
+
 # ================================================================
 # ENTRY POINT — only function calls below
 # ================================================================
@@ -335,28 +473,54 @@ def run_pipeline():
         SELECTOR, Xbin_train, y_train, bin_feature_names
     )
 
-    miner = mine_patterns(
-        PATTERN_MINER, binarizer, selector, Xsel_train, y_train,
-        feature_names, PURITY, THRESHOLD
-    )
-
     Xsel_test = Xbin_test[:, selector.best_subset]
     print(f"\nTest matrix after binarization + selection: {Xsel_test.shape}")
 
-    print_predictions(miner, Xsel_test, y_test)
+    # ── Lazy path ────────────────────────────────────────────────────────────
+    if PATTERN_MINER == "lazy":
+        lazy = LazyPatterns(
+            binarizer=binarizer,
+            selector=selector,
+            purity=LAZY_PURITY,
+            min_support=LAZY_MIN_SUPPORT,
+            verbose=True
+        )
+        lazy.fit(Xsel_train, y_train, original_feature_names=feature_names)
 
-    evaluate(
-        miner=miner,
-        X_train_sel=Xsel_train,
-        y_train=y_train,
-        X_test_sel=Xsel_test,
-        y_test=y_test,
-        model_name="LAD Heart Disease (Final)",
-        selector_name=SELECTOR,
-        miner_name=PATTERN_MINER,
-        purity=PURITY,
-        threshold=THRESHOLD
-    )
+        evaluate_lazy(
+            lazy=lazy,
+            X_train_sel=Xsel_train,
+            y_train=y_train,
+            X_test_sel=Xsel_test,
+            y_test=y_test,
+            selector_name=SELECTOR,
+            purity=LAZY_PURITY,
+            min_support=LAZY_MIN_SUPPORT
+        )
+
+    # ── Eager path (MaxPatterns / Eager1 / Genetic) ──────────────────────────
+    else:
+        miner = mine_patterns(
+            PATTERN_MINER, binarizer, selector, Xsel_train, y_train,
+            feature_names, PURITY, THRESHOLD,
+            ga_generations=GA_GENERATIONS,
+            ga_pop_size=GA_POP_SIZE
+        )
+
+        print_predictions(miner, Xsel_test, y_test)
+
+        evaluate(
+            miner=miner,
+            X_train_sel=Xsel_train,
+            y_train=y_train,
+            X_test_sel=Xsel_test,
+            y_test=y_test,
+            model_name="LAD Heart Disease (Final)",
+            selector_name=SELECTOR,
+            miner_name=PATTERN_MINER,
+            purity=PURITY,
+            threshold=THRESHOLD
+        )
 
 
 run_pipeline()
