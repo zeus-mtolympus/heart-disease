@@ -18,12 +18,12 @@ BINARIZER_MAX_DEPTH     = 4
 BINARIZER_MIN_SAMPLES   = 10
 
 # Feature Selector: "greedy" | "astar" | "mutualinfo" | "mutualinfo_astar"
-SELECTOR = "mutualinfo_astar"
+SELECTOR = "astar"
 
 # Pattern Miner: "maxpatterns" | "eager" | "genetic"
 # Use PATTERN_MINER = "lazy" to run the lazy path instead (separate evaluate)
 PATTERN_MINER   = "maxpatterns"
-PURITY          = 0.7
+PURITY          = 0.95
 THRESHOLD       = 0
 
 # Genetic algorithm settings (only used when PATTERN_MINER = "genetic")
